@@ -179,12 +179,15 @@ arrow = CosseratRod.straight_rod(
     shear_modulus=E_modulus / 2.6,  # Pa
 )
 
+
+shaft_mass_kg = np.sum(arrow.mass)
+print(f"--- Arrow Mass Breakdown ---")
+print(f"Shaft Mass: {shaft_mass_kg * 1000.0:.2f} grams")
+print(f"Tip Mass:   {tip_mass_kg * 1000.0:.2f} grams")
+print(f"Arrow Mass: {(shaft_mass_kg + tip_mass_kg) * 1000.0:.2f} grams")
+
 arrow.mass[-1] += tip_mass_kg  # kg
 arrow.mass[0] += string_effective_mass_kg  # kg
-
-total_mass_kg = np.sum(arrow.mass)
-print(f"--- Arrow Mass Breakdown ---")
-print(f"Total Mass: {total_mass_kg * 1000.0:.2f} grams")
 
 arrow_sim.append(arrow)
 
@@ -328,23 +331,6 @@ ax_main.add_patch(arrow_shaft_poly)
 (com_marker,) = ax_main.plot([], [], 'b.', markersize=10, label="Center of Mass")
 (com_trace,) = ax_main.plot([], [], '--', color='b', alpha=0.7, lw=1.5, label="CoM Trajectory")
 
-# Tail Force Vector Quiver Arrow
-force_scale = 0.0008
-force_arrow_width = 0.003
-tail_force_arrow = ax_main.quiver(
-    [0], [0], [0], [0],
-    angles='xy',
-    scale_units='xy',
-    scale=1,
-    width=force_arrow_width,
-    headwidth=3.5,
-    headlength=4.5,
-    headaxislength=4.0,
-    color='red',
-    alpha=0.8,
-    label="Tail Force"
-)
-
 # CoM Velocity Direction Arrow
 com_vel_arrow = ax_main.quiver(
     [0], [0], [0], [0],
@@ -373,6 +359,23 @@ init_dir_arrow = ax_main.quiver(
     color='black',
     alpha=0.8,
     label="Initial Arrow Direction"
+)
+
+# Tail Force Vector Quiver Arrow
+force_scale = 0.0008
+force_arrow_width = 0.003
+tail_force_arrow = ax_main.quiver(
+    [0], [0], [0], [0],
+    angles='xy',
+    scale_units='xy',
+    scale=1,
+    width=force_arrow_width,
+    headwidth=3.5,
+    headlength=4.5,
+    headaxislength=4.0,
+    color='red',
+    alpha=0.8,
+    label="Tail Force"
 )
 
 time_text = ax_main.text(
