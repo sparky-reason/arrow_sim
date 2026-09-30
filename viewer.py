@@ -246,19 +246,20 @@ class Viewer:
         self.bow_local_circle.set_visible(False)
         ax.add_patch(self.bow_local_circle)
 
-        # x-axis is oriented tip -> tail: the tip lies at -(length - com_arc_length),
-        # the tail at +com_arc_length. Arc lengths upper-bound the chord projections.
+        # x-axis is oriented tail -> tip (the plot is drawn rotated 180 degrees):
+        # the tail lies at -com_arc_length and the tip at +(length - com_arc_length).
+        # Arc lengths upper-bound the chord projections.
         ax.set_xlim(
-            -(self.arrow_length - res.com_arc_length) - self.LOCAL_X_PADDING,
-            res.com_arc_length + self.LOCAL_X_PADDING,
+            -res.com_arc_length - self.LOCAL_X_PADDING,
+            (self.arrow_length - res.com_arc_length) + self.LOCAL_X_PADDING,
         )
 
         ax.set_ylim(-self.LOCAL_Y_MIN_SPAN / 2.0, self.LOCAL_Y_MIN_SPAN / 2.0)
         ax.set_aspect("equal", adjustable="box")
         ax.grid(True)
-        ax.set_xlabel("Chord Position from CoM [m]  (tip -> tail)")
+        ax.set_xlabel("Chord Position from CoM [m]  (tail -> tip)")
         ax.set_ylabel("Transverse Deflection [m]")
-        ax.set_title("Arrow Vibrations (Local CoM Reference Frame, Tip-to-Tail Orientation)")
+        ax.set_title("Arrow Vibrations (Local CoM Reference Frame, Tail-to-Tip Orientation)")
         # No legend here: every entry would repeat what the main plot above already
         # shows, and the arrow's colours/width match it. The width comes from the
         # shared subplot margins, so dropping the legend does not resize this plot.
@@ -430,10 +431,10 @@ class Viewer:
         self._update_local_plot(frame_idx)
 
     def _update_local_plot(self, frame_idx: int) -> None:
-        """Redraw the vibration frame: CoM origin, tip-to-tail orientation."""
+        """Redraw the vibration frame: CoM origin, rotated 180 deg (tail left, tip right)."""
         res = self.result
 
-        # Local Plot Update (CoM origin, tip-to-tail orientation)
+        # Local Plot Update (CoM origin, rotated 180 deg: tail left, tip right)
         p_tail = res.positions[frame_idx, :2, 0]
         p_tip = res.positions[frame_idx, :2, -1]
 
@@ -452,8 +453,11 @@ class Viewer:
         p_com = np.array([res.com_x[frame_idx], res.com_y[frame_idx]])
 
         rel_pos = res.positions[frame_idx, :2, :] - p_com[:, np.newaxis]
-        local_x = u_x @ rel_pos
-        local_y = u_y @ rel_pos
+        # Rotate the frame 180 degrees so the tail is on the left and the tip on the
+        # right. Negating BOTH basis vectors is a pure rotation (det = +1, so the
+        # frame stays right-handed); flipping only one axis would mirror it.
+        local_x = -(u_x @ rel_pos)
+        local_y = -(u_y @ rel_pos)
 
         ldx = np.gradient(local_x)
         ldy = np.gradient(local_y)
@@ -479,8 +483,10 @@ class Viewer:
 
         # Bow rest center (global origin) expressed in the local CoM frame
         bow_rel = np.array([0.0, 0.0]) - p_com
-        bow_lx = float(u_x @ bow_rel)
-        bow_ly = float(u_y @ bow_rel)
+        # Same 180-degree rotation as the shaft above -- the bow rest has to be
+        # expressed in the SAME frame, or it would sit at the mirrored position.
+        bow_lx = float(-(u_x @ bow_rel))
+        bow_ly = float(-(u_y @ bow_rel))
         self.bow_local_circle.center = (bow_lx, bow_ly)
 
         # Only show it once it actually reaches the plotted region

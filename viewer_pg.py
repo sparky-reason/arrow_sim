@@ -282,7 +282,7 @@ class PgViewer:
         self.plot_main.setLabel("left", "Y Deflection", units="m")
         self.plot_local.setLabel("bottom", "Chord Position from CoM", units="m")
         self.plot_local.setLabel("left", "Transverse Deflection", units="m")
-        self.plot_local.setTitle("Arrow Vibrations (Local CoM Frame, Tip-to-Tail)")
+        self.plot_local.setTitle("Arrow Vibrations (Local CoM Frame, Tail-to-Tip)")
 
         # Pan + wheel zoom on the top plot, straight from pyqtgraph: its
         # ViewBox.wheelEvent already scales about the cursor, and a left-drag
@@ -442,13 +442,13 @@ class PgViewer:
 
         self.bow_local_circle = DataCircle(plot, res.config.bow_rest_radius, "k", z=6)
 
-        # x-axis is oriented tip -> tail: the tip lies at -(length - com_arc_length),
-        # the tail at +com_arc_length. Arc lengths upper-bound the chord projections.
-        # Stored as the canonical range so apply_layout can re-assert it (see
-        # _build_main_plot).
+        # x-axis is oriented tail -> tip (the plot is drawn rotated 180 degrees):
+        # the tail lies at -com_arc_length and the tip at +(length - com_arc_length).
+        # Arc lengths upper-bound the chord projections. Stored as the canonical
+        # range so apply_layout can re-assert it (see _build_main_plot).
         self.local_x_range = (
-            -(res.config.arrow_length - res.com_arc_length) - self.LOCAL_X_PADDING,
-            res.com_arc_length + self.LOCAL_X_PADDING,
+            -res.com_arc_length - self.LOCAL_X_PADDING,
+            (res.config.arrow_length - res.com_arc_length) + self.LOCAL_X_PADDING,
         )
         plot.setXRange(*self.local_x_range, padding=0)
 
@@ -632,7 +632,7 @@ class PgViewer:
         self._update_local_plot(frame_idx)
 
     def _update_local_plot(self, frame_idx: int) -> None:
-        """Redraw the vibration frame: CoM origin, tip-to-tail orientation."""
+        """Redraw the vibration frame: CoM origin, rotated 180 deg (tail left, tip right)."""
         res = self.result
 
         p_tail = res.positions[frame_idx, :2, 0]
@@ -653,8 +653,11 @@ class PgViewer:
         p_com = np.array([res.com_x[frame_idx], res.com_y[frame_idx]])
         rel_pos = res.positions[frame_idx, :2, :] - p_com[:, np.newaxis]
 
-        local_x = u_x @ rel_pos
-        local_y = u_y @ rel_pos
+        # Rotate the frame 180 degrees so the tail is on the left and the tip on
+        # the right. Negating BOTH basis vectors is a pure rotation (det = +1, so
+        # the frame stays right-handed); flipping only one axis would mirror it.
+        local_x = -(u_x @ rel_pos)
+        local_y = -(u_y @ rel_pos)
 
         ldx = np.gradient(local_x)
         ldy = np.gradient(local_y)
@@ -675,8 +678,10 @@ class PgViewer:
 
         # Bow rest center (global origin) expressed in the local CoM frame
         bow_rel = np.array([0.0, 0.0]) - p_com
-        bow_lx = float(u_x @ bow_rel)
-        bow_ly = float(u_y @ bow_rel)
+        # Same 180-degree rotation as the shaft above -- the bow rest has to be
+        # expressed in the SAME frame, or it would sit at the mirrored position.
+        bow_lx = float(-(u_x @ bow_rel))
+        bow_ly = float(-(u_y @ bow_rel))
         self.bow_local_circle.set_center(bow_lx, bow_ly)
 
         # Only show it once it actually reaches the plotted region
