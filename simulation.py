@@ -118,10 +118,13 @@ def youngs_modulus(spine_value: float, outer_radius: float) -> float:
     return (test_force_N * (span_L**3)) / (SPINE_BEAM_DIVISOR * deflection_m * i_beam)  # Pa
 
 
-# ==========================================
-# 1. Custom Aerodynamic Drag Force Class
-# ==========================================
 class ArrowAerodynamics(ea.NoForces):
+    """Aerodynamic drag on the shaft and the fletching.
+
+    Drag is applied perpendicular to the shaft axis on every element, plus a
+    lumped fletching drag on the nock.
+    """
+
     def __init__(self, rho_air=1.225, Cd_shaft=1.0, Cd_fletching=1.2, fletching_area=0.002):
         super().__init__()
         self.rho = rho_air  # kg/m^3
@@ -157,10 +160,14 @@ class ArrowAerodynamics(ea.NoForces):
             system.external_forces[:, 0] += fletching_drag
 
 
-# ==========================================
-# 2. Angled String Push Force (Cosine Target Decay)
-# ==========================================
 class StringPushForce(ea.NoForces):
+    """Angled push on the nock, modelling the string during the stroke.
+
+    The force aims at a lateral target that decays from the plucker angle to
+    zero over the first ``pluck_decay_length`` of the stroke, and a transverse
+    damping term keeps the string release stable.
+    """
+
     def __init__(
         self,
         f_max,
@@ -216,9 +223,6 @@ class StringPushForce(ea.NoForces):
             system.external_forces[1, 0] += -self.c_string * v_y  # N
 
 
-# ==========================================
-# 3. Simulation Environment Setup
-# ==========================================
 class ArrowSimulation(
     ea.BaseSystemCollection,
     ea.Constraints,
@@ -227,13 +231,12 @@ class ArrowSimulation(
     ea.CallBacks,
     ea.Contact,
 ):
-    pass
+    """PyElastica system collection holding the arrow, the bow rest and their forces."""
 
 
-# ==========================================
-# 4. Diagnostics Callback (Logs Tail Force Vector)
-# ==========================================
 class ArrowCallBack(CallBackBaseClass):
+    """Records time, node positions and the tail force vector every ``step_skip`` steps."""
+
     def __init__(self, step_skip: int, callback_params: dict):
         super().__init__()
         self.step_skip = step_skip
@@ -246,9 +249,6 @@ class ArrowCallBack(CallBackBaseClass):
             self.callback_params["tail_force"].append(system.external_forces[:, 0].copy())
 
 
-# ==========================================
-# 5. Result Container
-# ==========================================
 @dataclass
 class SimulationResult:
     """Everything the viewer needs to render a simulated shot.
@@ -272,9 +272,6 @@ class SimulationResult:
     config: SimConfig  # the configuration this shot was produced with
 
 
-# ==========================================
-# 6. Simulation
-# ==========================================
 class Simulation:
     """Builds and integrates the arrow/bow system described by a :class:`SimConfig`.
 
