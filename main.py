@@ -226,7 +226,7 @@ arrow_sim.detect_contact_between(arrow, bow_rest).using(
 # ==========================================
 # 6. Apply Dynamic String Force & Aerodynamics
 # ==========================================
-draw_weight_lbs = 60.0  # lbs
+draw_weight_lbs = 25.0  # lbs
 LBS_TO_N = 4.44822  # N/lb
 push_force_magnitude = draw_weight_lbs * LBS_TO_N  # N
 
@@ -277,8 +277,8 @@ arrow_sim.collect_diagnostics(arrow).using(
 arrow_sim.finalize()
 timestepper = PositionVerlet()
 
-n_steps = 40_000
-final_time = 0.02  # s
+n_steps = 60_000
+final_time = 0.03  # s
 
 print(f"Simulating shot ({draw_weight_lbs} lbs draw, {spine_value} spine)...")
 integrate(timestepper, arrow_sim, final_time, n_steps)
@@ -310,11 +310,18 @@ fixed_arrow_width = 0.0015
 # Initial direction vector
 init_dir = direction[:2] / np.linalg.norm(direction[:2])
 
+# Arc-length position of the CoM measured from the tail (m).
+# Used only to set sensible limits on the local (CoM) plot's x-axis.
+node_arc_length = (np.arange(len(node_masses)) / (len(node_masses) - 1)) * length
+com_arc_length = float(np.sum(node_arc_length * node_masses) / total_mass)
+
 # ==========================================
 # 9. Interactive Visualization & GUI
 # ==========================================
-fig, (ax_main, ax_local) = plt.subplots(2, 1, figsize=(11, 8), gridspec_kw={'height_ratios': [2, 1]})
-plt.subplots_adjust(bottom=0.20, hspace=0.35)
+# Layout is driven by absolute-inch margins (see apply_layout in section 10) so that
+# titles, axis labels and the sliders never overlap, at any window size. Fractions
+# would shrink on a short window and clip the headings.
+fig, (ax_main, ax_local) = plt.subplots(2, 1, figsize=(11, 6.0), gridspec_kw={'height_ratios': [1, 1]})
 
 # --- MAIN PLOT (GLOBAL FRAME) ---
 bow_circle = Circle((0, 0), bow_rest_radius, color="black", alpha=0.7, label="Bow Rest (0,0)")
@@ -385,38 +392,153 @@ time_text = ax_main.text(
 
 all_x = positions[:, 0, :]
 all_y = positions[:, 1, :]
+# --- Plot sizing ---
+# Both plots keep a true 1:1 data scale (no distortion), so the on-screen box shape
+# is dictated by the x-span / y-span ratio. The two plots are therefore harmonized
+# by giving them the SAME box shape and filling it completely, rather than by
+# hard-coding a padding. apply_layout() recomputes each y-range from the live axes
+# geometry on every resize, so the plots always expand into the available space.
 ax_main.set_xlim(np.min(all_x) - 0.05, np.max(all_x) + 0.05)
-ax_main.set_ylim(np.min(all_y) - 0.05, np.max(all_y) + 0.05)
-ax_main.set_aspect('equal')
+
+main_y_center = 0.5 * (np.min(all_y) + np.max(all_y))
+main_y_min_span = (np.max(all_y) + 0.05) - (np.min(all_y) - 0.05)
+ax_main.set_ylim(main_y_center - main_y_min_span / 2.0, main_y_center + main_y_min_span / 2.0)
+
+ax_main.set_aspect('equal', adjustable='box')
 ax_main.grid(True)
 ax_main.set_xlabel("X Position [m]")
 ax_main.set_ylabel("Y Deflection [m]")
 ax_main.set_title(f"Archer's Paradox ({draw_weight_lbs} lbs draw, {spine_value} spine, {tip_weight_grains:.0f} gr tip)")
-ax_main.legend(loc="upper right")
+ax_main.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0))
 
 # --- LOCAL PLOT (VIBRATION FRAME) ---
-arrow_local_poly = Polygon(np.empty((0, 2)), color='tab:orange', alpha=0.5, label="Local Shaft (True Width)")
+arrow_local_poly = Polygon(np.empty((0, 2)), color='tab:blue', alpha=0.5, label="Local Shaft (True Width)")
 ax_local.add_patch(arrow_local_poly)
-(arrow_local_nodes,) = ax_local.plot([], [], 'o', color='#b34700', markersize=3, label="Local Nodes")
+(arrow_local_nodes,) = ax_local.plot([], [], 'o', color='navy', markersize=3, label="Local Nodes")
 
+# CoM reference cross. Intentionally unlabelled: these are frame axes, not data, so
+# they are left out of the legend to keep it focused on the arrow itself.
 ax_local.axhline(0, color='black', lw=1, alpha=0.5)
+ax_local.axvline(0, color='black', lw=1, alpha=0.5)
 
-ax_local.set_xlim(-0.02, length + 0.02)
-ax_local.set_ylim(-0.06, 0.06)
+# Bow rest in the local frame. The local transform is a rigid rotation + translation
+# (unit basis vectors), so the circle keeps its radius and only its center moves.
+# Styled and labelled to match the bow rest legend in the main plot above.
+bow_local_circle = Circle(
+    (0, 0), bow_rest_radius, color="black", alpha=0.7, label="Bow Rest (0,0)", zorder=5
+)
+bow_local_circle.set_visible(False)
+ax_local.add_patch(bow_local_circle)
+
+# x-axis is oriented tip -> tail: the tip lies at -(length - com_arc_length),
+# the tail at +com_arc_length. Arc lengths upper-bound the chord projections.
+ax_local.set_xlim(-(length - com_arc_length) - 0.02, com_arc_length + 0.02)
+
+# Minimum y-span: the +/-0.06 m vibration window. apply_layout() treats this as a floor
+# so the window stays readable, while still letting the plot grow on a larger window.
+local_y_min_span = 0.12
+ax_local.set_ylim(-local_y_min_span / 2.0, local_y_min_span / 2.0)
+ax_local.set_aspect('equal', adjustable='box')
 ax_local.grid(True)
-ax_local.set_xlabel("Chord Position [m]")
+ax_local.set_xlabel("Chord Position from CoM [m]  (tip -> tail)")
 ax_local.set_ylabel("Transverse Deflection [m]")
-ax_local.set_title("Arrow Vibrations (Local Tail-to-Tip Reference Frame)")
-ax_local.legend(loc="upper right")
+ax_local.set_title("Arrow Vibrations (Local CoM Reference Frame, Tip-to-Tail Orientation)")
+# No legend here: every entry would repeat what the main plot above already shows, and
+# the arrow's colours/width match it. The width comes from the shared subplot margins,
+# so dropping the legend does not resize this plot.
 
-# Widget Axes Placement
-ax_timeline = plt.axes([0.15, 0.10, 0.7, 0.02])
-ax_play = plt.axes([0.15, 0.03, 0.1, 0.04])
-ax_speed = plt.axes([0.40, 0.03, 0.45, 0.03])
+# Widget Axes Placement. Created here so the widgets can be constructed, but their
+# real positions are set by apply_layout() in absolute inches, which keeps them inside
+# the reserved bottom band at any window size.
+ax_timeline = plt.axes([0.0, 0.0, 0.0, 0.0])
+ax_play = plt.axes([0.0, 0.0, 0.0, 0.0])
+ax_speed = plt.axes([0.0, 0.0, 0.0, 0.0])
 
 slider_timeline = Slider(ax_timeline, 'Time', 0, times[-1] * 1000, valinit=0, valfmt='%.1f ms')
 btn_play = Button(ax_play, 'Pause', hovercolor='0.97')
 slider_speed = Slider(ax_speed, 'Speed', 0.2, 5.0, valinit=1.0, valfmt='%.1fx')
+
+
+# ==========================================
+# 10. Resize Handling
+# ==========================================
+def apply_layout(event=None):
+    """Lay the figure out in absolute inches so nothing overlaps or clips.
+
+    Margins are expressed in inches rather than figure fractions: a fraction of a
+    short window is far too small for a title or an axis label, which is what clipped
+    plot 1's heading and pushed plot 2's x-label onto the time slider. Every resize
+    recomputes them, so the headings and the widget row keep their clearance.
+    """
+    fig_w, fig_h = fig.get_size_inches()
+    if fig_w <= 0 or fig_h <= 0:
+        return
+
+    # Inches reserved outside the plot area for labels, titles and widgets.
+    m_left, m_top, m_bottom = 0.95, 0.45, 1.95   # y-label | plot 1 title | x-label + sliders
+    # Gap between the two plots must clear plot 1's tick labels + x-label above plot 2's
+    # title, otherwise the two collide.
+    gap_in = 1.05
+
+    # The legend is anchored 2% of the axes width to the right of the axes, so the
+    # legend column also has to cover that offset, which itself grows with the window.
+    m_right = 2.45 + 0.03 * (fig_w - m_left - 2.45)
+
+    left = m_left / fig_w
+    right = 1.0 - m_right / fig_w
+    bottom = m_bottom / fig_h
+    top = 1.0 - m_top / fig_h
+
+    # hspace is a fraction of the average axes height, so convert the inch gap.
+    axes_h_in = ((top - bottom) * fig_h) / 2.0
+    hspace = gap_in / axes_h_in
+    fig.subplots_adjust(left=left, right=right, bottom=bottom, top=top, hspace=hspace)
+
+    # --- Slider / button row, stacked upward from the bottom of the figure ---
+    plot_span = right - left
+    btn_h_in, sld_h_in = 0.32, 0.28
+    y_btn = 0.16 / fig_h
+    y_sld_tl = (0.16 + btn_h_in + 0.22) / fig_h   # timeline sits above the button row
+
+    ax_timeline.set_position([left + 0.04 * plot_span, y_sld_tl, 0.92 * plot_span, sld_h_in / fig_h])
+    ax_play.set_position([left + 0.04 * plot_span, y_btn, 0.13 * plot_span, btn_h_in / fig_h])
+    ax_speed.set_position([left + 0.35 * plot_span, y_btn + 0.05 / fig_h, 0.60 * plot_span, 0.22 / fig_h])
+
+    # --- Make each plot's box fill the space it was given ---
+    # With an equal aspect, a given box shape plus a fixed x-span fully determines the
+    # visible y-span. Deriving the y-span from the allotted box lets the plots expand
+    # with the window instead of leaving a margin.
+    #
+    # Both plots share ONE y-span-per-x-span ratio r, so their data aspect ratios are
+    # identical and their boxes always come out the same shape (harmonized). r is the
+    # largest value that still fills the allotted area and still honours each plot's
+    # minimum span (the data extent, and the +/-0.06 m vibration window).
+    specs = (
+        (ax_main, main_y_min_span, main_y_center),
+        (ax_local, local_y_min_span, 0.0),
+    )
+
+    r = 0.0
+    for ax, min_span, _ in specs:
+        box = ax.get_position(original=True)  # full area allotted to this axes
+        x_lo, x_hi = ax.get_xlim()
+        if box.width <= 0 or box.height <= 0 or (x_hi - x_lo) <= 0:
+            continue
+        r_fill = (box.height * fig_h) / (box.width * fig_w)
+        r_min = min_span / (x_hi - x_lo)
+        r = max(r, r_fill, r_min)
+
+    if r > 0:
+        for ax, _, y_center in specs:
+            x_lo, x_hi = ax.get_xlim()
+            y_span = r * (x_hi - x_lo)
+            ax.set_ylim(y_center - y_span / 2.0, y_center + y_span / 2.0)
+
+    fig.canvas.draw_idle()
+
+
+fig.canvas.mpl_connect('resize_event', apply_layout)
+apply_layout()
 
 is_playing = True
 current_frame = 0
@@ -479,11 +601,12 @@ def update_frame(frame_idx):
 
     time_text.set_text(f"t = {times[frame_idx] * 1000:.2f} ms")
 
-    # Local Plot Update
+    # Local Plot Update (CoM origin, tip-to-tail orientation)
     p_tail = positions[frame_idx, :2, 0]
     p_tip = positions[frame_idx, :2, -1]
 
-    vec = p_tip - p_tail
+    # Orientation ONLY: unit vector pointing from the tip toward the tail
+    vec = p_tail - p_tip
     L_chord = np.linalg.norm(vec)
 
     if L_chord > 1e-6:
@@ -493,7 +616,10 @@ def update_frame(frame_idx):
         u_x = np.array([1.0, 0.0])
         u_y = np.array([0.0, 1.0])
 
-    rel_pos = positions[frame_idx, :2, :] - p_tail[:, np.newaxis]
+    # Origin: mass-weighted center of mass of the current frame
+    p_com = np.array([com_x[frame_idx], com_y[frame_idx]])
+
+    rel_pos = positions[frame_idx, :2, :] - p_com[:, np.newaxis]
     local_x = u_x @ rel_pos
     local_y = u_y @ rel_pos
 
@@ -516,6 +642,21 @@ def update_frame(frame_idx):
 
     arrow_local_poly.set_xy(lpoly_verts)
     arrow_local_nodes.set_data(local_x, local_y)
+
+    # Bow rest center (global origin) expressed in the local CoM frame
+    bow_rel = np.array([0.0, 0.0]) - p_com
+    bow_lx = float(u_x @ bow_rel)
+    bow_ly = float(u_y @ bow_rel)
+    bow_local_circle.center = (bow_lx, bow_ly)
+
+    # Only show it once it actually reaches the plotted region
+    x0, x1 = ax_local.get_xlim()
+    y0, y1 = ax_local.get_ylim()
+    inside_view = (
+        bow_lx + bow_rest_radius >= x0 and bow_lx - bow_rest_radius <= x1
+        and bow_ly + bow_rest_radius >= y0 and bow_ly - bow_rest_radius <= y1
+    )
+    bow_local_circle.set_visible(inside_view)
 
     fig.canvas.draw_idle()
 
