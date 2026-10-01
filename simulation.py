@@ -83,7 +83,7 @@ class SimConfig:
 
     # --- String push (kinematic finger release) ---
     draw_weight_lbs: float = 25.0  # lbs
-    string_damping: float = 0.4  # N*s/m (transverse string damping)
+    string_damping: float = 0.0  # N*s/m (transverse string damping)
     initial_pluck_angle_deg: float = 8.0  # initial lateral angle
     pluck_decay_length: float = 0.025  # m
 
