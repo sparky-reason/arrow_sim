@@ -49,6 +49,11 @@ BOW_REST_DENSITY = 1000.0  # kg/m^3
 VEL_EPS = 1e-4  # m/s, below this a velocity is treated as zero
 NORM_EPS = 1e-6  # generic zero-guard for norms and lengths
 
+# Fraction of the theoretical explicit-stability limit actually used for the
+# timestep. The limit itself sits exactly on the edge of stability, so a
+# safety margin is required.
+CFL_SAFETY_FACTOR = 0.2
+
 
 # ==========================================
 # Configuration
@@ -83,7 +88,6 @@ class SimConfig:
 
     # --- String push (kinematic finger release) ---
     draw_weight_lbs: float = 25.0  # lbs
-    string_damping: float = 0.0  # N*s/m (transverse string damping)
     initial_pluck_angle_deg: float = 8.0  # initial lateral angle
     pluck_decay_length: float = 0.025  # m
 
@@ -98,7 +102,9 @@ class SimConfig:
     damping_time_step: float = 1e-6  # s
 
     # --- Integration & logging ---
-    n_steps: int = 60_000
+    # The timestep itself is not configurable: it is derived from the rod
+    # stiffness, density and resolution by Simulation._compute_stable_timestep(),
+    # and the step count follows from final_time / dt.
     final_time: float = 0.03  # s
     diagnostic_step_skip: int = 250
 
@@ -164,8 +170,7 @@ class StringPushForce(ea.NoForces):
     """Angled push on the nock, modelling the string during the stroke.
 
     The force aims at a lateral target that decays from the plucker angle to
-    zero over the first ``pluck_decay_length`` of the stroke, and a transverse
-    damping term keeps the string release stable.
+    zero over the first ``pluck_decay_length`` of the stroke.
     """
 
     def __init__(
@@ -173,7 +178,6 @@ class StringPushForce(ea.NoForces):
         f_max,
         draw_length,
         brace_height,
-        c_string,
         pluck_angle,
         pluck_decay_length,
     ):
@@ -181,7 +185,6 @@ class StringPushForce(ea.NoForces):
         self.f_max = f_max  # N
         self.draw_length = draw_length  # m
         self.brace_height = brace_height  # m
-        self.c_string = c_string  # N*s/m (transverse string damping)
         self.pluck_angle = pluck_angle  # rad
         self.pluck_decay_length = pluck_decay_length  # m
         self.initialized = False
@@ -189,7 +192,6 @@ class StringPushForce(ea.NoForces):
     def apply_forces(self, system, time=0.0):
         pos_x = system.position_collection[0, 0]  # m
         pos_y = system.position_collection[1, 0]  # m
-        v_y = system.velocity_collection[1, 0]  # m/s
 
         if pos_x < -self.brace_height:
             # Distance traveled by nock from draw position (-draw_length)
@@ -219,8 +221,31 @@ class StringPushForce(ea.NoForces):
                 system.external_forces[0, 0] += f_mag * (dx / mag_r)  # N
                 system.external_forces[1, 0] += f_mag * (dy / mag_r)  # N
 
-            # Stable Transverse String Damping
-            system.external_forces[1, 0] += -self.c_string * v_y  # N
+
+class StringDetachmentCallBack(CallBackBaseClass):
+    """Subtracts the effective string mass from the nock node once it reaches the brace height."""
+
+    def __init__(self, step_skip: int, brace_height: float, string_effective_mass: float):
+        super().__init__()
+        self.step_skip = step_skip
+        self.brace_height = brace_height
+        self.string_effective_mass = string_effective_mass  # kg
+        self.detached = False
+
+    def make_callback(self, system, time, current_step):
+        # Only check if not already detached
+        if not self.detached and current_step % self.step_skip == 0:
+            pos_x = system.position_collection[0, 0]  # Nock X position [m]
+
+            if pos_x >= -self.brace_height:
+                # Deduct effective string mass from the nock node (index 0)
+                system.mass[0] -= self.string_effective_mass
+
+                # Update inverse mass array if present in the rod system
+                if hasattr(system, "inv_mass"):
+                    system.inv_mass[0] = 1.0 / system.mass[0]
+
+                self.detached = True
 
 
 class ArrowSimulation(
@@ -234,7 +259,7 @@ class ArrowSimulation(
     """PyElastica system collection holding the arrow, the bow rest and their forces."""
 
 
-class ArrowCallBack(CallBackBaseClass):
+class RecorderCallBack(CallBackBaseClass):
     """Records time, node positions and the tail force vector every ``step_skip`` steps."""
 
     def __init__(self, step_skip: int, callback_params: dict):
@@ -303,17 +328,31 @@ class Simulation:
         )
         self._apply_forcing(arrow, arrow_sim)
 
+        arrow_sim.collect_diagnostics(arrow).using(
+            StringDetachmentCallBack,
+            step_skip=100,
+            brace_height=cfg.brace_height,
+            string_effective_mass=cfg.string_effective_mass,
+        )
+
         data_tracker = {"time": [], "position": [], "tail_force": []}
         arrow_sim.collect_diagnostics(arrow).using(
-            ArrowCallBack, step_skip=cfg.diagnostic_step_skip, callback_params=data_tracker
+            RecorderCallBack, step_skip=cfg.diagnostic_step_skip, callback_params=data_tracker
         )
 
         # Finalize and integrate
         arrow_sim.finalize()
         timestepper = PositionVerlet()
 
+        # The timestep is not a free parameter: it is dictated by the stiffness,
+        # density and resolution of the rod, so derive it and let the step count
+        # follow from the requested shot duration.
+        dt = self._compute_stable_timestep()
+        n_steps = int(np.ceil(cfg.final_time / dt))
+
         print(f"Simulating shot ({cfg.draw_weight_lbs} lbs draw, {cfg.spine_value} spine)...")
-        integrate(timestepper, arrow_sim, cfg.final_time, cfg.n_steps)
+        print(f"  timestep = {dt:.3e} s over {n_steps} steps (t = {cfg.final_time * 1e3:.1f} ms)")
+        integrate(timestepper, arrow_sim, cfg.final_time, n_steps)
         print("Simulation complete!")
 
         return self._postprocess(data_tracker, arrow, init_dir)
@@ -393,7 +432,6 @@ class Simulation:
             f_max=cfg.draw_weight_lbs * LBS_TO_N,  # N
             draw_length=cfg.draw_length,
             brace_height=cfg.brace_height,
-            c_string=cfg.string_damping,
             pluck_angle=np.radians(cfg.initial_pluck_angle_deg),
             pluck_decay_length=cfg.pluck_decay_length,
         )
@@ -405,6 +443,41 @@ class Simulation:
             Cd_fletching=cfg.cd_fletching,
             fletching_area=cfg.fletching_area,
         )
+
+    def _compute_stable_timestep(self) -> float:
+        """Largest stable timestep [s] for explicit integration of the Cosserat rod.
+
+        The stiffness, density, geometry and resolution all come from
+        :attr:`self.config`, so this stays valid if the config changes between
+        runs. Two independent limits bound the explicit step size; the stricter
+        one wins:
+
+        1. **Axial wave (CFL) condition** -- longitudinal waves travel at the
+           speed of sound ``c = sqrt(E / rho)`` and must be resolved by the grid.
+        2. **Bending / rotational limit** -- the stiff Cosserat directors
+           oscillate at ``omega = sqrt(E * I / A / (rho * dl^4))``. An explicit
+           scheme cannot step through more than half a period of that mode.
+
+        Both sit exactly at the edge of stability, so a safety factor is applied.
+        """
+        cfg = self.config
+
+        E_modulus = youngs_modulus(cfg.spine_value, cfg.outer_radius)  # Pa
+        dl = cfg.arrow_length / cfg.n_elements  # m, element length
+        rho = cfg.shaft_density  # kg/m^3
+
+        # 1. Axial wave CFL condition: dt_axial = dl / c_axial
+        c_axial = np.sqrt(E_modulus / rho)  # m/s
+        dt_axial = dl / c_axial  # s
+
+        # 2. Bending / rotational stability limit: dt_bending ~ 2 / omega_max
+        # A = pi*r^2, I = pi*r^4/4  =>  I/A = r^2/4
+        omega_bending = np.sqrt((E_modulus * (cfg.outer_radius**2 / 4.0)) / (rho * dl**4))  # rad/s
+        dt_bending = 2.0 / omega_bending if omega_bending > 0 else dt_axial  # s
+
+        # Take the stricter limit and apply the CFL safety factor
+        dt_crit = min(dt_axial, dt_bending)
+        return CFL_SAFETY_FACTOR * dt_crit
 
     # --- Mass-Weighted Center of Mass (CoM) & Velocity ---
     def _postprocess(
