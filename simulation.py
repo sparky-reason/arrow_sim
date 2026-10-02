@@ -13,6 +13,7 @@ lives on :class:`Simulation` instances or on the returned result.
 from dataclasses import dataclass
 
 import numpy as np
+from tqdm import tqdm
 
 # PyElastica core imports
 import elastica as ea
@@ -22,7 +23,6 @@ from elastica.boundary_conditions import FixedConstraint
 from elastica.contact_forces import RodCylinderContact
 from elastica.callback_functions import CallBackBaseClass
 from elastica.dissipation import AnalyticalLinearDamper
-from elastica.timestepper import integrate
 from elastica.timestepper.symplectic_steppers import PositionVerlet
 
 # ==========================================
@@ -49,10 +49,11 @@ BOW_REST_DENSITY = 1000.0  # kg/m^3
 VEL_EPS = 1e-4  # m/s, below this a velocity is treated as zero
 NORM_EPS = 1e-6  # generic zero-guard for norms and lengths
 
-# Fraction of the theoretical explicit-stability limit actually used for the
-# timestep. The limit itself sits exactly on the edge of stability, so a
-# safety margin is required.
+# Fraction of the theoretical explicit-stability limit used for the timestep.
 CFL_SAFETY_FACTOR = 0.2
+
+# Minimum seconds between progress-bar redraws.
+PROGRESS_MIN_INTERVAL = 0.1  # s
 
 
 # ==========================================
@@ -102,10 +103,9 @@ class SimConfig:
     damping_time_step: float = 1e-6  # s
 
     # --- Integration & logging ---
-    # The timestep itself is not configurable: it is derived from the rod
-    # stiffness, density and resolution by Simulation._compute_stable_timestep(),
-    # and the step count follows from final_time / dt.
-    final_time: float = 0.03  # s
+    # dt is derived from the rod properties; n_steps follows from final_time / dt.
+    final_time: float = 0.1  # s, hard cap; the shot normally ends sooner
+    stop_x: float = 0.1  # m, end the shot once every node is past this x
     diagnostic_step_skip: int = 250
 
 
@@ -344,15 +344,54 @@ class Simulation:
         arrow_sim.finalize()
         timestepper = PositionVerlet()
 
-        # The timestep is not a free parameter: it is dictated by the stiffness,
-        # density and resolution of the rod, so derive it and let the step count
-        # follow from the requested shot duration.
+        # The timestep is fixed by the rod's stiffness, density and resolution.
         dt = self._compute_stable_timestep()
         n_steps = int(np.ceil(cfg.final_time / dt))
 
         print(f"Simulating shot ({cfg.draw_weight_lbs} lbs draw, {cfg.spine_value} spine)...")
-        print(f"  timestep = {dt:.3e} s over {n_steps} steps (t = {cfg.final_time * 1e3:.1f} ms)")
-        integrate(timestepper, arrow_sim, cfg.final_time, n_steps)
+        print(f"  timestep = {dt:.3e} s, stopping once all nodes pass x = {cfg.stop_x:.3f} m")
+
+        # integrate() always runs the full n_steps, so drive the stepper directly
+        # to stop early; final_time remains a hard cap. The bar tracks the
+        # trailing node's x, the same quantity the stop condition uses.
+        stop_x = cfg.stop_x
+        x_row = arrow.position_collection[0]  # live view, no copy per step
+        start_x = float(x_row.min())
+        span_x = stop_x - start_x  # m to travel
+
+        time = 0.0
+        n_done = 0
+        with tqdm(
+            # Exact total; bar_format hides float noise in the display.
+            total=span_x if span_x > 0.0 else 0.0,
+            unit="m",
+            desc="arrow",
+            bar_format="{l_bar}{bar}| {n:.3f}/{total:.3f} m [{elapsed}<{remaining}]",
+            mininterval=PROGRESS_MIN_INTERVAL,
+        ) as bar:
+            shown = min(start_x, stop_x)  # clamped: last step overshoots stop_x
+            for n_done in range(1, n_steps + 1):
+                time = timestepper.step(arrow_sim, time, dt)
+
+                # min() is both the stop test and the progress measure.
+                x = float(x_row.min())
+                if span_x > 0.0:
+                    new_shown = min(x, stop_x)
+                    bar.update(new_shown - shown)
+                    shown = new_shown
+                    # Accumulating float deltas can end a ULP past total, which
+                    # makes tqdm warn about frac > 1 on the final refresh.
+                    if bar.n > span_x:
+                        bar.n = span_x
+
+                if x > stop_x:
+                    break
+
+        completed = bool(x_row.min() > stop_x)
+        if completed:
+            print(f"  arrow cleared x = {stop_x:.3f} m after {n_done} steps (t = {time * 1e3:.2f} ms)")
+        else:
+            print(f"  final_time cap reached without clearing: {n_done} steps (t = {time * 1e3:.2f} ms)")
         print("Simulation complete!")
 
         return self._postprocess(data_tracker, arrow, init_dir)
@@ -445,20 +484,10 @@ class Simulation:
         )
 
     def _compute_stable_timestep(self) -> float:
-        """Largest stable timestep [s] for explicit integration of the Cosserat rod.
+        """Largest stable timestep [s] for explicit integration of the rod.
 
-        The stiffness, density, geometry and resolution all come from
-        :attr:`self.config`, so this stays valid if the config changes between
-        runs. Two independent limits bound the explicit step size; the stricter
-        one wins:
-
-        1. **Axial wave (CFL) condition** -- longitudinal waves travel at the
-           speed of sound ``c = sqrt(E / rho)`` and must be resolved by the grid.
-        2. **Bending / rotational limit** -- the stiff Cosserat directors
-           oscillate at ``omega = sqrt(E * I / A / (rho * dl^4))``. An explicit
-           scheme cannot step through more than half a period of that mode.
-
-        Both sit exactly at the edge of stability, so a safety factor is applied.
+        Takes the stricter of the axial wave CFL limit and the bending/rotational
+        limit, scaled by CFL_SAFETY_FACTOR. All inputs come from :attr:`config`.
         """
         cfg = self.config
 
