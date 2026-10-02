@@ -304,31 +304,48 @@ def aerodynamic_force(
     lift_slope=0.0,
     stall_rad=np.deg2rad(18.0),
 ):
-    """Simple body/point aerodynamic model.
+    """Aerodynamic force for a slender body/point.
 
-    Drag is opposite relative wind. Lift is perpendicular to the
-    velocity/axis plane and uses a clipped linear lift curve.
+    ``v_rel_world`` is the object's velocity relative to the air, so
+    ``flow`` points in the direction the object is moving through the air.
+    The longitudinal drag opposes that motion.  The normal-force direction
+    is the projection of the body axis onto the plane perpendicular to the
+    flow.  Importantly, the normal-force sign is chosen to oppose the
+    *lateral* velocity of the body relative to its axis.  This makes the
+    force restoring rather than destabilising when the arrow is yawed/pitched.
+
+    This is still a coefficient model rather than a CFD solution: the caller
+    supplies Cd and (optionally) a linear normal-force slope.
     """
-    speed = np.linalg.norm(v_rel_world)
+    v = np.asarray(v_rel_world, dtype=float)
+    axis = _normalize(axis_world)
+    speed = np.linalg.norm(v)
     if speed < 1e-12:
         return np.zeros(3)
 
-    flow = v_rel_world / speed
+    flow = v / speed
     qdyn = 0.5 * rho * speed**2
 
-    n = axis_world - np.dot(axis_world, flow) * flow
-    nn = np.linalg.norm(n)
+    # Drag always opposes the actual relative velocity.
     drag = -qdyn * cd * area * flow
 
-    if nn < 1e-10 or lift_slope == 0:
+    if lift_slope == 0.0:
         return drag
 
-    n /= nn
-    alpha = np.arccos(np.clip(np.dot(axis_world, -flow), -1, 1))
-    alpha *= np.sign(np.dot(n, axis_world))
-    alpha = np.clip(alpha, -stall_rad, stall_rad)
+    # Component of the flow transverse to the arrow axis.  The restoring
+    # normal force points opposite this component.
+    v_trans = v - np.dot(v, axis) * axis
+    vtrans_mag = np.linalg.norm(v_trans)
+    if vtrans_mag < 1e-12:
+        return drag
 
-    return drag + qdyn * (lift_slope * alpha) * area * n
+    # Small-angle angle of attack.  This is a magnitude here because the
+    # force direction already carries the restoring sign.
+    alpha = np.arcsin(np.clip(vtrans_mag / speed, 0.0, 1.0))
+    alpha = np.clip(alpha, 0.0, stall_rad)
+
+    n_force = -v_trans / vtrans_mag
+    return drag + qdyn * (lift_slope * alpha) * area * n_force
 
 
 def shaft_segment_force(
@@ -358,13 +375,24 @@ def shaft_segment_force(
     axial_fraction = np.dot(tangent, flow)
     cross_fraction = np.sqrt(max(0.0, 1.0 - axial_fraction**2))
 
-    A_cross = diameter * ds * cross_fraction
-    F_cross = -qdyn * cd_crossflow * A_cross * flow
+    # A cylinder's cross-flow drag is governed by the velocity component
+    # perpendicular to its axis, not by the full speed.
+    v_perp = v_rel_world - np.dot(v_rel_world, tangent) * tangent
+    vperp_mag = np.linalg.norm(v_perp)
+    if vperp_mag > 1e-12:
+        q_perp = 0.5 * rho * vperp_mag**2
+        F_cross = (
+            -q_perp * cd_crossflow * diameter * ds
+            * (v_perp / vperp_mag)
+        )
+    else:
+        F_cross = np.zeros(3)
 
+    # Axial skin-friction/pressure drag is much smaller than cross-flow drag.
+    v_axial = np.dot(v_rel_world, tangent)
+    q_axial = 0.5 * rho * v_axial**2
     A_axial = np.pi * diameter * ds
-    F_axial = (
-        -qdyn * cd_axial * A_axial * axial_fraction * tangent
-    )
+    F_axial = -q_axial * cd_axial * A_axial * np.sign(v_axial) * tangent
 
     return F_cross + F_axial
 
@@ -438,7 +466,7 @@ def simulate(
     initial_bending_m=(0.0, 0.0),
     initial_bending_velocity_m_s=(0.0, 0.0),
     initial_orientation_quaternion_xyzw=None,
-    target_radius_m=0.005,
+    target_radius_m=0.25,
 ):
     """Integrate a 6-DOF arrow with a two-axis first bending mode.
 
@@ -580,7 +608,14 @@ def simulate(
         rf_b_center = np.array(
             [xf - arrow.x_cm, qb_y * phi_f, qb_z * phi_f]
         )
-        vf_base = v + Rbw @ np.cross(omega, rf_b_center)
+        # The feather's local point velocity includes rigid-body rotation
+        # and the local flexible-shaft transverse velocity.  Thus a bending
+        # oscillation changes the instantaneous feather AoA as well.
+        vf_local_b = (
+            np.cross(omega, rf_b_center)
+            + np.array([0.0, qbd_y * phi_f, qbd_z * phi_f])
+        )
+        vf_base = v + Rbw @ vf_local_b
 
         rel = vf_base - wind
         speed = np.linalg.norm(rel)
@@ -601,18 +636,31 @@ def simulate(
                 )
                 normal = _normalize(normal)
 
-                alpha = np.arcsin(
-                    np.clip(np.dot(flow, normal), -1.0, 1.0)
-                )
-                alpha = np.clip(alpha, -stall, stall)
+                # Only the component of the feather normal perpendicular
+                # to the airflow can produce lift.  Projecting the normal
+                # prevents the lift term from incorrectly adding/removing
+                # energy along the flight direction.
+                normal_perp = normal - np.dot(normal, flow) * flow
+                nperp = np.linalg.norm(normal_perp)
 
-                Ff = (
-                    -qdyn * f.cd * f.area_each_m2 * flow
-                    + qdyn
-                    * (f.lift_slope_per_rad * alpha)
-                    * f.area_each_m2
-                    * normal
-                )
+                F_drag = -qdyn * f.cd * f.area_each_m2 * flow
+                if nperp < 1e-12:
+                    F_lift = np.zeros(3)
+                else:
+                    alpha = np.arcsin(
+                        np.clip(np.dot(flow, normal), -1.0, 1.0)
+                    )
+                    alpha = np.clip(alpha, -stall, stall)
+                    # For a fletching, the restoring force opposes the
+                    # transverse airflow relative to the arrow axis.
+                    F_lift = (
+                        -qdyn
+                        * (f.lift_slope_per_rad * alpha)
+                        * f.area_each_m2
+                        * (normal_perp / nperp)
+                    )
+
+                Ff = F_drag + F_lift
 
                 # Approximate each feather force at its centroid.
                 rf_b = rf_b_center
@@ -866,7 +914,7 @@ if __name__ == "__main__":
         arrow,
         atmosphere,
         initial_position_m=[0.0, 1.5, 0.0],
-        initial_velocity_world_m_s=[70.0, 2.0, 0.5],
+        initial_velocity_world_m_s=[55.0, 2.0, 0.0],
         initial_direction=[1.0, 0.02, -0.01],
         initial_roll_deg=15.0,
         initial_angular_velocity_body_rad_s=[0.2, -0.1, 80.0],
