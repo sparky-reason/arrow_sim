@@ -23,7 +23,7 @@ import numpy as np
 from scipy.integrate import solve_ivp
 from scipy.spatial.transform import Rotation
 
-from arrow_flight_sim_updated import Arrow, Atmosphere, FlightResult, simulate, orientation_from_direction_and_roll
+from arrow_flight_sim import Arrow, Atmosphere, FlightResult, simulate, orientation_from_direction_and_roll
 
 G = 9.80665
 
@@ -96,7 +96,7 @@ class Longbow:
     def stored_energy_J(self):
         # Numerical integral of force-draw curve.
         d = np.linspace(0, self.draw_coordinate_m, 2000)
-        return float(np.trapz(self.draw_force(d), d) * self.bow_efficiency)
+        return float(np.trapezoid(self.draw_force(d), d) * self.bow_efficiency)
 
 
 @dataclass
@@ -312,7 +312,7 @@ class BowLaunchSimulator:
 
 
 def example():
-    arrow=Arrow(length_m=.75,shaft_outer_d_m=.0065,shaft_inner_d_m=.0045,total_mass_kg=.028,point_mass_kg=.009,point_x_m=.75,spine=1000)
+    arrow=Arrow(length_m=.75,shaft_outer_d_m=.0065,shaft_inner_d_m=.0045,total_mass_kg=.028,point_mass_kg=.009,point_x_m=.75,spine=600)
     bow=Longbow(length_m=1.85,draw_strength_kgf=40.,draw_length_m=.72,brace_height_m=.16,arrow_side_offset_m=.018)
     sim=BowLaunchSimulator(arrow,bow); launch=sim.simulate_launch()
     print('--- BOW LAUNCH ---')
