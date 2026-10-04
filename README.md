@@ -4,20 +4,33 @@ Is it really paradox? Who knows!
 
 ## Interactive viewer
 
-`arrow_viewer.py` is a PyQt6/pyqtgraph front end for `arrow_flight_sim.py`.
-It integrates a shot on a worker thread and plays it back in two views at
-once, driven by a single frame index so they cannot drift apart:
+`arrow_viewer.py` is a PyQt6/pyqtgraph front end for `arrow_shot_simulator.py`.
+It integrates a whole shot on a worker thread and plays it back in two views
+at once, driven by a single frame index so they cannot drift apart:
 
 * **Side view** - x-y plane (range against height)
 * **Top view** - x-z plane (range against sideways offset)
 
-The left panel edits the initial position, the initial 3-D velocity (either
-as speed + elevation/yaw or as an explicit vx/vy/vz vector), the shaft
-attitude and roll, the body rates, the target and the checkpoints. Arrow
-geometry, feathers, atmosphere and integrator settings live in a collapsed
-"Advanced" group. The `playback speed` entry is a pure time scaling - `1.0`
-is real time, `0.1` is ten times slower. The horizontal axes of the two
-plots are linked, so zooming or panning either one moves the other.
+Playback covers the entire shot, not just the free flight: the backend's
+launch phase (the ~22 ms draw and release stroke, solved as a flexible beam)
+is prepended to the flight on one continuous time axis, so Play starts at
+full draw and shows the arrow accelerating off the string before it flies.
+
+The left panel edits only what describes *this* bow on *this* shot - draw
+strength, draw length, bow cant, release azimuth, nock height offset, arrow
+side offset, arrow-rest longitudinal offset, the two lateral release
+disturbances, string roll, plus arrow length and spine. Everything else
+(shaft diameters, mass distribution, fletching, atmosphere, integrator
+settings, the target and the checkpoints) is held at the values in
+`arrow_shot_simulator.example()`, and the "Fixed by the simulation" section
+lists them. Defaults therefore reproduce the simulator's own example shot
+exactly.
+
+A full solve takes roughly twenty seconds (a 2 us maximum step through the
+launch stroke, then the flight), which is why the default `playback speed` is
+well below real time - the launch is only a few percent of the simulated
+duration. The `playback speed` and `frame rate` entries are view-only and do
+not affect the solve.
 
 Run it with:
 
@@ -25,6 +38,14 @@ Run it with:
 python arrow_viewer.py
 ```
 
-The shaft is drawn as a genuinely bent polyline, using the same first
-bending mode the integrator itself uses in `_tip_state`, and the rendered
-tip position and tip velocity match `_tip_state` exactly.
+The shaft is drawn as a genuinely bent polyline: the launch uses the beam
+solver's own nodal shape, and the flight uses the same first bending mode the
+integrator itself uses in `_tip_state`.
+
+## Tests
+
+```bash
+python viewer_shot_test.py    # headless: builds a shot, checks the phase join
+python viewer_gui_test.py     # offscreen Qt: panel wiring and field defaults
+python viewer_window_test.py  # offscreen Qt: presses Start, waits for the solve
+```
