@@ -2,6 +2,8 @@
 
 Is it really paradox? Who knows!
 
+Read how it's simulated here [arrow_shot_simulation_explanation.md](arrow_shot_simulation_explanation.md)
+
 ## Interactive viewer
 
 `arrow_viewer.py` is a PyQt6/pyqtgraph front end for `arrow_shot_simulator.py`.
