@@ -109,10 +109,8 @@ from arrow_shot_simulator import (
     Atmosphere,
     BowLaunchSimulator,
     Feather,
-    Longbow,
-    Recurve,
-    ShotResult,
     Target,
+    simulate
 )
 
 
@@ -316,7 +314,12 @@ def dim_label(label: QtWidgets.QLabel) -> QtWidgets.QLabel:
 # ==========================================
 @dataclass(frozen=True)
 class Field:
-    """One numeric parameter shown as a labelled spin box."""
+    """One numeric parameter shown as a labelled spin box.
+
+    Defaults are the values from the ``__main__`` block of
+    :mod:`arrow_flight_sim`, so the window opens on the same shot that the
+    module's own example runs.
+    """
 
     name: str
     label: str
@@ -327,146 +330,95 @@ class Field:
     decimals: int = 2
 
 
-# Every default below is the value used by arrow_shot_simulator.example(),
-# so the window opens on exactly the shot that module runs.
-#
-# The parameter set is deliberately small: it is the set that describes *this
-# bow and this arrow on this shot*.  Everything else -- shaft diameters, mass
-# distribution, fletching, atmosphere, integrator settings, the target and the
-# checkpoints -- is pinned to the simulator's own example values in the
-# FIXED_* constants further down, rather than being offered as inputs.
-BOW_FIELDS: Sequence[Field] = (
-    Field("draw_strength", "draw strength [kgf]", 20.0, 5.0, 60.0, 0.5, 2),
-    Field("draw_length", "draw length [m]", 0.72, 0.30, 1.00, 0.005, 3),
-    Field("bow_cant", "bow cant [deg]", 2.0, -90.0, 90.0, 0.1, 2),
-    Field("bow_azimuth", "release azimuth [deg]", 0.5, -30.0, 30.0, 0.1, 2),
-    Field("nock_height_offset", "nock height offset [m]", 0.002, -0.05, 0.05, 0.0002, 4),
-    Field("arrow_side_offset", "arrow side offset [m]", 0.018, -0.05, 0.05, 0.0005, 4),
-    Field(
-        "rest_longitudinal_offset",
-        "arrow rest long. offset [m]",
-        0.010, -0.20, 0.20, 0.0005, 4,
-    ),
-    Field(
-        "release_lateral_displacement",
-        "release lateral displ. [m]",
-        0.003, -0.02, 0.02, 0.0002, 4,
-    ),
-    Field(
-        "release_lateral_velocity",
-        "release lateral veloc. [m/s]",
-        1.0, -10.0, 10.0, 0.05, 3,
-    ),
-    Field(
-        "release_string_roll",
-        "release string roll [deg]",
-        2.0, -90.0, 90.0, 0.1, 2,
-    ),
+INITIAL_FIELDS: Sequence[Field] = (
+    Field("x0", "position x0 [m]", 0.0, -100.0, 100.0, 0.5, 3),
+    Field("y0", "position y0 [m]", 1.5, -5.0, 20.0, 0.05, 3),
+    Field("z0", "position z0 [m]", 0.0, -20.0, 20.0, 0.05, 3),
+    Field("speed", "speed [m/s]", 55.0, 0.0, 200.0, 0.5, 2),
+    Field("elev", "elevation [deg]", 2.0, -90.0, 90.0, 0.1, 3),
+    Field("yaw", "yaw [deg]", 0.0, -180.0, 180.0, 0.1, 3),
+    Field("vx", "velocity vx [m/s]", 55.0, -200.0, 200.0, 0.5, 3),
+    Field("vy", "velocity vy [m/s]", 2.0, -200.0, 200.0, 0.5, 3),
+    Field("vz", "velocity vz [m/s]", 0.0, -200.0, 200.0, 0.5, 3),
+    Field("shaft_elev", "shaft elevation [deg]", 2.0, -90.0, 90.0, 0.1, 3),
+    Field("shaft_yaw", "shaft yaw [deg]", 0.0, -180.0, 180.0, 0.1, 3),
+    Field("roll", "roll about shaft [deg]", 15.0, -180.0, 180.0, 1.0, 2),
+    Field("omega_pitch", "pitch rate [rad/s]", 0.2, -200.0, 200.0, 0.1, 3),
+    Field("omega_yaw", "yaw rate [rad/s]", -0.1, -200.0, 200.0, 0.1, 3),
+    Field("spin", "spin [rad/s]", 80.0, -5000.0, 5000.0, 5.0, 1),
 )
 
-ARROW_FIELDS: Sequence[Field] = (
-    Field("arrow_length", "arrow length [m]", 0.75, 0.40, 1.00, 0.005, 3),
-    Field("spine", "spine", 400.0, 100.0, 2000.0, 5.0, 0),
+TARGET_FIELDS: Sequence[Field] = (
+    Field("target_distance", "distance x [m]", 20.0, 0.05, 500.0, 0.5, 3),
+    Field("target_height", "height y [m]", 1.25, -10.0, 50.0, 0.05, 3),
+    Field("target_z", "sideways z [m]", 0.0, -20.0, 20.0, 0.05, 3),
+    Field("target_radius", "radius [m]", 0.25, 0.0, 5.0, 0.01, 3),
 )
 
-# Playback controls are view-only and do not change the solve.
 PLAYBACK_FIELDS: Sequence[Field] = (
-    # The launch phase is only ~22 ms of simulated time, so real-time playback
-    # would flash past the whole draw and release in a couple of frames.  The
-    # default is therefore well below 1.0x.
-    Field("speed_mult", "playback speed (x real time)", 0.1, 0.001, 5.0, 0.05, 3),
+    # Playback speed is a pure time scaling: 1.0 is real time, 0.1 is ten
+    # times slower, 2.0 twice as fast.
+    Field("speed_mult", "playback speed (x real time)", 1.0, 0.01, 5.0, 0.05, 3),
     Field("fps", "frame rate [fps]", 60.0, 5.0, 500.0, 5.0, 0),
+)
+
+ADVANCED_FIELDS: Sequence[Field] = (
+    Field("length", "arrow length [m]", 0.75, 0.05, 2.0, 0.01, 4),
+    Field("shaft_od", "outer dia [m]", 0.0065, 0.0001, 0.05, 0.0001, 5),
+    Field("shaft_id", "inner dia [m]", 0.0045, 0.0, 0.05, 0.0001, 5),
+    Field("mass", "total mass [kg]", 0.028, 0.001, 2.0, 0.001, 5),
+    Field("point_mass", "point mass [kg]", 0.009, 0.0, 1.0, 0.001, 5),
+    Field("point_x", "point mass at [m]", 0.75, 0.0, 2.0, 0.01, 4),
+    Field("spine", "spine", 1000.0, 1.0, 100000.0, 10.0, 1),
+    Field("feather_x0", "feather start [m]", 0.08, 0.0, 2.0, 0.005, 4),
+    Field("feather_x1", "feather end [m]", 0.19, 0.0, 2.0, 0.005, 4),
+    Field("feather_h", "feather height [m]", 0.012, 0.0001, 0.1, 0.001, 5),
+    Field("feather_area", "feather area ea. [m2]", 0.00075, 0.00001, 0.01, 0.00005, 6),
+    Field("feather_count", "feather count", 3.0, 0.0, 6.0, 1.0, 0),
+    Field("feather_cant", "feather cant [deg]", 2.0, -90.0, 90.0, 0.5, 2),
+    Field("feather_mass", "feather mass ea. [kg]", 0.0005, 0.0, 0.05, 0.0001, 6),
+    Field("pressure", "pressure [Pa]", 101325.0, 1000.0, 200000.0, 100.0, 1),
+    Field("temperature", "temperature [K]", 288.15, 150.0, 400.0, 0.5, 2),
+    Field("dt", "max solver step [s]", 0.001, 0.00002, 0.05, 0.0002, 6),
+    Field("t_end", "max flight time [s]", 5.0, 0.1, 60.0, 0.5, 2),
+    Field("ground_y", "ground y [m]", 0.0, -10.0, 50.0, 0.05, 3),
+    Field("wind_x", "wind x [m/s]", 0.0, -50.0, 50.0, 0.5, 3),
+    Field("wind_y", "wind y [m/s]", 0.0, -50.0, 50.0, 0.5, 3),
+    Field("wind_z", "wind z [m/s]", 0.0, -50.0, 50.0, 0.5, 3),
 )
 
 ALL_FIELDS: dict[str, Field] = {
     f.name: f
-    for group in (BOW_FIELDS, ARROW_FIELDS, PLAYBACK_FIELDS)
+    for group in (INITIAL_FIELDS, TARGET_FIELDS, PLAYBACK_FIELDS, ADVANCED_FIELDS)
     for f in group
 }
 
-
-# ==========================================
-# Values held fixed at the simulator's defaults
-# ==========================================
-# Each constant names the field it comes from, so they can be checked against
-# arrow_shot_simulator.example() at a glance.  They are grouped by the object
-# they configure below.
-FIXED_SHAFT_OD_M = 0.0065            # Arrow.shaft_outer_d_m
-FIXED_SHAFT_ID_M = 0.0045            # Arrow.shaft_inner_d_m
-FIXED_TOTAL_MASS_KG = 0.028          # Arrow.total_mass_kg
-FIXED_POINT_MASS_KG = 0.009          # Arrow.point_mass_kg
-FIXED_POINT_X_FRACTION = 1.0         # Arrow.point_x_m / Arrow.length_m
-FIXED_FEATHER_X0_M = 0.08            # Feather.x_start_m
-FIXED_FEATHER_X1_M = 0.19            # Feather.x_end_m
-FIXED_FEATHER_HEIGHT_M = 0.012       # Feather.height_m
-FIXED_FEATHER_AREA_M2 = 0.00075      # Feather.area_each_m2
-FIXED_FEATHER_COUNT = 3              # Feather.count
-FIXED_FEATHER_CANT_DEG = 2.0         # Feather.cant_deg
-FIXED_FEATHER_MASS_KG = 0.0005       # Feather.mass_kg
-
-FIXED_BOW_LENGTH_M = 1.85            # Bow.length_m
-FIXED_BRACE_HEIGHT_M = 0.16          # Bow.brace_height_m
-FIXED_FEATHER_CLOCKING_DEG = 20.0    # Bow.feather_clocking_deg
-
-# The bow type follows the example: a traditional longbow.  Its draw-force
-# exponent (1.00) differs from the recurve's 0.82, so the choice is visible in
-# the shot and is stated here rather than left implicit.
-BOW_CLASS = "longbow"
-
-FIXED_ATMOSPHERE = dict(pressure_pa=101325.0, temperature_k=288.15)
-
-# Target and checkpoints, as in the simulator's example.  The target defines
-# where the shot is measured, so it is drawn but not edited.
-FIXED_TARGET_DISTANCE_M = 20.0       # Target.distance_m
-FIXED_TARGET_HEIGHT_M = 1.25         # Target.height_m
-FIXED_TARGET_Z_M = 0.0               # Target.z_m
-FIXED_TARGET_RADIUS_M = 0.25         # target_radius_m
-
-DEFAULT_CHECKPOINTS = (5.0, 10.0, 15.0, 20.0)
-
-# The ground the flight is stopped at, and the line both views draw as their
-# reference.  The launch phase runs with the bow near y = 0, so the launch
-# stroke itself is drawn just above this line.
-FIXED_GROUND_Y_M = 0.0
-
-# Beam nodes for the launch solve.  This is also how many stations the shaft
-# polyline is drawn with during the flight, so the two phases draw the arrow
-# with the same number of points.
-LAUNCH_NODES = 41
-
-# Fields whose unit is degrees, so the spin box says so itself rather than
-# relying on the label alone.
-DEGREE_FIELDS = frozenset(
-    {"bow_cant", "bow_azimuth", "release_string_roll"}
-)
-
-# Read-only rows shown in the "Fixed by the simulation" section, so the values
-# that are pinned are visible rather than merely implicit in the source.
-FIXED_SUMMARY: Sequence[tuple[str, str]] = (
-    ("bow type", BOW_CLASS),
-    ("bow length", f"{FIXED_BOW_LENGTH_M:g} m"),
-    ("brace height", f"{FIXED_BRACE_HEIGHT_M:g} m"),
-    ("feather clocking", f"{FIXED_FEATHER_CLOCKING_DEG:g} deg"),
-    ("shaft dia", f"{FIXED_SHAFT_OD_M * 1e3:.1f} / {FIXED_SHAFT_ID_M * 1e3:.1f} mm"),
-    ("total mass", f"{FIXED_TOTAL_MASS_KG * 1e3:.0f} g"),
-    ("point mass", f"{FIXED_POINT_MASS_KG * 1e3:.0f} g"),
-    ("point at", "tip"),
-    ("fletching", f"{FIXED_FEATHER_COUNT} x {FIXED_FEATHER_AREA_M2 * 1e4:.1f} cm2"),
-    ("feather pos", f"{FIXED_FEATHER_X0_M:g} - {FIXED_FEATHER_X1_M:g} m"),
-    ("feather cant", f"{FIXED_FEATHER_CANT_DEG:g} deg"),
-    ("atmosphere", f"{FIXED_ATMOSPHERE['pressure_pa']:.0f} Pa / "
-                   f"{FIXED_ATMOSPHERE['temperature_k']:.2f} K"),
-    ("target", f"{FIXED_TARGET_DISTANCE_M:g} m / {FIXED_TARGET_HEIGHT_M:g} m"),
-    ("checkpoints", ", ".join(f"{d:g}" for d in DEFAULT_CHECKPOINTS)),
-)
+# Checkpoints are a list rather than a fixed set of spin boxes; the default
+# matches the example in arrow_flight_sim.py.
+DEFAULT_CHECKPOINTS = "5, 10, 15, 20"
 
 
 # ==========================================
 # Small helpers
 # ==========================================
-def checkpoint_name(distance: float) -> str:
-    """Caption used for a checkpoint drawn at ``distance``."""
-    return f"{distance:g} m"
+def direction_from_angles(elev_deg: float, yaw_deg: float) -> np.ndarray:
+    """Unit direction for an elevation above +X and a yaw towards +Z.
+
+    World axes are +X forward, +Y up, +Z sideways, so yaw is measured from
+    +X towards +Z and both angles are given in degrees.
+    """
+    e = np.radians(elev_deg)
+    a = np.radians(yaw_deg)
+    return np.array([np.cos(e) * np.cos(a), np.sin(e), np.cos(e) * np.sin(a)])
+
+
+def angles_from_vector(v) -> tuple[float, float]:
+    """Inverse of :func:`direction_from_angles`, returned as degrees."""
+    v = np.asarray(v, dtype=float)
+    return (
+        float(np.degrees(np.arctan2(v[1], np.hypot(v[0], v[2])))),
+        float(np.degrees(np.arctan2(v[2], v[0]))),
+    )
 
 
 # ==========================================
@@ -474,148 +426,36 @@ def checkpoint_name(distance: float) -> str:
 # ==========================================
 @dataclass
 class Trajectory:
-    """Everything the views need, extracted once from a complete shot.
+    """Everything the views need, extracted once from a :class:`FlightResult`.
 
-    :meth:`from_shot` joins the two phases the backend produces -- the launch
-    stroke and the free flight -- into a single, strictly increasing time
-    base, so playback starts at full draw and runs through to impact.
-
-    The flight solver state is ``[r(3), v(3), quat(4), omega(3), q_y, qd_y,
-    q_z, qd_z]``; the launch solver state is ``[uy(K), duy(K), uz(K),
-    duz(K), nock_x, nock_v, sy, syv, sz, szv]``.  Both are converted to the
-    same world-frame shaft polyline here, in one vectorized pass, so playback
-    only ever slices pre-computed arrays.
+    The solver state is ``[r(3), v(3), quat(4), omega(3), q_y, qd_y, q_z,
+    qd_z]``.  All frame data below is computed in one vectorized pass, so
+    playback only ever slices pre-computed arrays.
     """
 
-    t: np.ndarray               # (N,)      time from full draw [s]
+    t: np.ndarray               # (N,)      time [s]
     cm: np.ndarray              # (N, 3)    centre of mass [m]
     tip: np.ndarray             # (N, 3)    tip position [m]
     nock: np.ndarray            # (N, 3)    nock position [m]
     shaft: np.ndarray           # (N, K, 3) bent centreline [m]
     tip_velocity: np.ndarray    # (N, 3)    tip velocity [m/s]
     speed: np.ndarray           # (N,)      CM speed [m/s]
-    n_launch: int = 0           # frames belonging to the launch phase
     result: object = field(repr=False, default=None)
 
     @classmethod
-    def from_shot(
-        cls,
-        arrow: Arrow,
-        sim: BowLaunchSimulator,
-        shot,
-        max_frames: int = MAX_FRAMES,
-    ):
-        """Build frames for both phases of ``shot``.
-
-        ``sim`` is the :class:`BowLaunchSimulator` that produced the shot; it
-        is needed because the launch solver stores its beam nodes in the
-        bow's own frame, and only the simulator carries the rotation that maps
-        them into world coordinates.
-        """
-        launch_t, launch = cls._launch_frames(sim, shot.launch, max_frames)
-        flight_t, flight = cls._flight_frames(arrow, shot.flight, max_frames)
-
-        # The launch already ends exactly where the flight begins -- the
-        # flight's t=0 state *is* the projected launch state -- so the flight's
-        # own first frame is dropped rather than stacked on top of it, which
-        # would give the time array two entries at the same instant.
-        offset = float(launch_t[-1]) if launch_t.size else 0.0
-        t = np.concatenate([launch_t, flight_t[1:] + offset])
-        n_launch = launch_t.size
-
-        def tail(key):
-            return np.concatenate([launch[key], flight[key][1:]])
-
-        return cls(
-            t=t,
-            n_launch=n_launch,
-            cm=tail("cm"),
-            tip=tail("tip"),
-            nock=tail("nock"),
-            shaft=tail("shaft"),
-            tip_velocity=tail("tip_velocity"),
-            speed=tail("speed"),
-            result=shot,
-        )
-
-    @staticmethod
-    def _thin(t: np.ndarray, max_frames: int) -> np.ndarray:
-        """Index-select an evenly spread subset of ``t``.
-
-        Both solvers step non-uniformly -- the launch at a fixed 2 us and the
-        flight at whatever the integrator chose -- so sampling on a linspace
-        keeps a constant fraction of every moment rather than sampling evenly
-        in index space.
-        """
-        if t.size <= max_frames:
-            return np.arange(t.size)
-        return np.unique(np.linspace(0, t.size - 1, max_frames).astype(int))
-
-    @classmethod
-    def _launch_frames(cls, sim: BowLaunchSimulator, launch, max_frames: int):
-        """World-frame frames for the draw and release stroke.
-
-        The launch solver's state vector holds the transverse displacement of
-        each beam node in the bow's own frame, plus the axial nock position.
-        Those nodes are mapped into the world exactly as
-        :meth:`BowLaunchSimulator._world_nodes` does, and the centre of mass is
-        the consistent-mass-weighted mean of the nodal positions -- the same
-        definition the solver itself uses in ``_project_launch_state``.
-        """
-        sol = launch.launch_solution
+    def from_result(cls, arrow: Arrow, result, max_frames: int = MAX_FRAMES):
+        sol = result.solution
         t = np.asarray(sol.t, dtype=float)
         y = np.asarray(sol.y, dtype=float)
 
-        idx = cls._thin(t, max_frames)
-        t = t[idx]
-        y = y[:, idx]
-
-        k = sim.n
-        uy, duy = y[0:k], y[k:2 * k]
-        uz, duz = y[2 * k:3 * k], y[3 * k:4 * k]
-        nock_x, nock_v = y[4 * k], y[4 * k + 1]
-
-        # Nodal positions/velocities in the bow frame, then rotated into the
-        # world by the simulator's fixed launch rotation.
-        local_p = np.empty((t.size, k, 3))
-        local_p[:, :, 0] = nock_x[:, None] + sim.s[None, :]
-        local_p[:, :, 1] = uy.T
-        local_p[:, :, 2] = sim.bow.arrow_side_offset_m + uz.T
-
-        local_v = np.empty((t.size, k, 3))
-        local_v[:, :, 0] = nock_v[:, None]
-        local_v[:, :, 1] = duy.T
-        local_v[:, :, 2] = duz.T
-
-        shaft = local_p @ sim.R0.T
-        velocity = local_v @ sim.R0.T
-
-        weights = sim.mass / np.sum(sim.mass)
-        cm = np.einsum("k,nkd->nd", weights, shaft)
-        cm_velocity = np.einsum("k,nkd->nd", weights, velocity)
-
-        return t, {
-            "cm": cm,
-            "tip": shaft[:, -1, :],
-            "nock": shaft[:, 0, :],
-            "shaft": shaft,
-            # The tip node's own velocity, not a rigid-body reconstruction of
-            # it: on the bow the shaft is genuinely bending, so the tip is
-            # moving faster than the centre of mass.
-            "tip_velocity": velocity[:, -1, :],
-            "speed": np.linalg.norm(cm_velocity, axis=1),
-        }
-
-    @classmethod
-    def _flight_frames(cls, arrow: Arrow, flight, max_frames: int):
-        """World-frame frames for the free flight, after the bow."""
-        sol = flight.solution
-        t = np.asarray(sol.t, dtype=float)
-        y = np.asarray(sol.y, dtype=float)
-
-        idx = cls._thin(t, max_frames)
-        t = t[idx]
-        y = y[:, idx]
+        # Uniformly thin the stored steps; the solver's own steps are
+        # non-uniform, so index-selecting on a linspace keeps a constant
+        # fraction of every moment in the flight rather than sampling evenly
+        # in index space.
+        if t.size > max_frames:
+            idx = np.unique(np.linspace(0, t.size - 1, max_frames).astype(int))
+            t = t[idx]
+            y = y[:, idx]
 
         n = t.size
         cm = y[0:3].T
@@ -628,7 +468,7 @@ class Trajectory:
         rot = Rotation.from_quat(quats).as_matrix()          # (N, 3, 3)
 
         # Bent centreline, identical in construction to _tip_state in
-        # arrow_shot_simulator.py.
+        # arrow_flight_sim.py.
         nodes = np.linspace(0.0, arrow.length_m, SHAFT_NODES)
         phi = np.asarray(arrow.phi(nodes), dtype=float)
         local = np.empty((n, nodes.size, 3))
@@ -650,23 +490,20 @@ class Trajectory:
             "nij,nj->ni", rot, np.cross(omega_body, offset) + bend_rate
         )
 
-        return t, {
-            "cm": cm,
-            "tip": shaft[:, -1, :],
-            "nock": shaft[:, 0, :],
-            "shaft": shaft,
-            "tip_velocity": tip_velocity,
-            "speed": np.linalg.norm(velocity, axis=1),
-        }
+        return cls(
+            t=t,
+            cm=cm,
+            tip=shaft[:, -1, :],
+            nock=shaft[:, 0, :],
+            shaft=shaft,
+            tip_velocity=tip_velocity,
+            speed=np.linalg.norm(velocity, axis=1),
+            result=result,
+        )
 
     @property
     def duration(self) -> float:
         return float(self.t[-1]) if self.t.size else 0.0
-
-    @property
-    def launch_duration(self) -> float:
-        """Simulated time from full draw to the arrow leaving the bow."""
-        return float(self.t[self.n_launch - 1]) if self.n_launch else 0.0
 
     def frame_at(self, t_query: float) -> int:
         """Index of the last stored frame at or before ``t_query``."""
@@ -680,43 +517,28 @@ class Trajectory:
 # Simulation worker
 # ==========================================
 class SimulationWorker(QtCore.QObject):
-    """Runs a full shot -- launch and flight -- on a worker thread.
+    """Runs :func:`arrow_flight_sim.simulate` on a worker thread.
 
-    Both ``Arrow`` and ``Bow`` validate their own inputs and raise
-    ``ValueError`` for impossible configurations; those are surfaced through
+    ``simulate`` validates its own inputs and raises ``ValueError`` for
+    impossible arrows or initial conditions; those are surfaced through
     :attr:`failed` so the window can report them instead of dying.
-
-    The worker keeps its own :class:`BowLaunchSimulator` rather than calling
-    :func:`arrow_shot_simulator.simulate_shot`, because the launch solver
-    stores its beam nodes in the bow's frame and only the simulator carries
-    the rotation into world coordinates.  The two are otherwise equivalent:
-    ``launch_and_fly`` runs the same launch and the same flight.
     """
 
-    finished = QtCore.pyqtSignal(object, object)
+    finished = QtCore.pyqtSignal(object)
     failed = QtCore.pyqtSignal(str)
 
-    def __init__(self, arrow: Arrow, bow, **shot_kwargs):
+    def __init__(self, kwargs: dict):
         super().__init__()
-        self._arrow = arrow
-        self._bow = bow
-        self._shot_kwargs = shot_kwargs
+        self._kwargs = kwargs
 
     @QtCore.pyqtSlot()
     def run(self) -> None:
         try:
-            sim = BowLaunchSimulator(self._arrow, self._bow, nodes=LAUNCH_NODES)
-            launch = sim.launch_and_fly(
-                Atmosphere(**FIXED_ATMOSPHERE), **self._shot_kwargs
-            )
+            result = simulate(**self._kwargs)
         except Exception as exc:  # noqa: BLE001 - reported in the status bar
             self.failed.emit(f"{type(exc).__name__}: {exc}")
             return
-
-        # ShotResult is what simulate_shot returns; building it here keeps the
-        # viewer independent of how the two phases were driven.
-        result = ShotResult(launch=launch, flight=launch.flight_result)
-        self.finished.emit(result, sim)
+        self.finished.emit(result)
 
 
 # ==========================================
@@ -1381,8 +1203,6 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
         self.trajectory: Optional[Trajectory] = None
         self.target: Optional[Target] = None
         self._arrow: Optional[Arrow] = None
-        self._bow = None
-        self._sim: Optional[BowLaunchSimulator] = None
         self._checkpoints: Optional[list] = None
         self._thread: Optional[QtCore.QThread] = None
         self._worker: Optional[SimulationWorker] = None
@@ -1397,7 +1217,8 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
         self.timer.timeout.connect(self._on_tick)
 
         self._build_ui()
-        self.set_status("Ready - press Start to fire a shot (~20 s to solve).")
+        self._sync_velocity_inputs()
+        self.set_status("Ready - press Start to integrate a shot.")
 
     # ---------------------------------------------------------------
     # Construction
@@ -1407,10 +1228,10 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
         panel_layout = QtWidgets.QVBoxLayout(panel)
         panel_layout.setContentsMargins(6, 6, 6, 6)
 
-        panel_layout.addWidget(self._build_bow_group())
-        panel_layout.addWidget(self._build_arrow_group())
-        panel_layout.addWidget(self._build_fixed_group())
+        panel_layout.addWidget(self._build_initial_group())
+        panel_layout.addWidget(self._build_target_group())
         panel_layout.addWidget(self._build_playback_group())
+        panel_layout.addWidget(self._build_advanced_group())
         panel_layout.addWidget(self._build_buttons())
         panel_layout.addStretch(1)
 
@@ -1538,53 +1359,51 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
         self._group_boxes.append(section)
         return section, section.form
 
-    def _build_bow_group(self) -> QtWidgets.QWidget:
-        box, form = self._group("Bow")
+    def _build_initial_group(self) -> QtWidgets.QWidget:
+        box, form = self._group("Initial conditions")
 
-        hint = dim_label(QtWidgets.QLabel(f"{BOW_CLASS}  -  fixed bow type"))
+        # World axes: +X forward, +Y up, +Z sideways.
+        hint = dim_label(QtWidgets.QLabel("+X range   +Y up   +Z sideways"))
         form.addRow(hint)
 
-        for fld in BOW_FIELDS:
-            spin = self._spin(form, fld)
-            if fld.name in DEGREE_FIELDS:
-                spin.setSuffix(" deg")
+        for fld in INITIAL_FIELDS:
+            box_widget = self._spin(form, fld)
+            # Angles are degrees; keep that visible in the widget itself.
+            if fld.name in ("elev", "yaw", "shaft_elev", "shaft_yaw"):
+                box_widget.setSuffix(" deg")
+
+        # The velocity can be given either way round; the mode box decides
+        # which triple of fields is actually read.
+        self.velocity_mode = QtWidgets.QComboBox()
+        self.velocity_mode.addItems(["speed + elevation/yaw", "3-D velocity vector"])
+        self.velocity_mode.currentIndexChanged.connect(self._sync_velocity_inputs)
+        form.addRow("velocity entry", self.velocity_mode)
+
+        self.follow_direction = QtWidgets.QCheckBox("shaft points along velocity")
+        self.follow_direction.setChecked(True)
+        self.follow_direction.toggled.connect(self._sync_velocity_inputs)
+        form.addRow(self.follow_direction)
 
         return box
 
-    def _build_arrow_group(self) -> QtWidgets.QWidget:
-        box, form = self._group("Arrow")
-        for fld in ARROW_FIELDS:
+    def _build_target_group(self) -> QtWidgets.QWidget:
+        box, form = self._group("Target")
+        for fld in TARGET_FIELDS:
             self._spin(form, fld)
-        note = dim_label(QtWidgets.QLabel(
-            "Shaft, mass, point and fletching are held at the simulator's "
-            "values; only length and spine are editable."
-        ))
-        note.setWordWrap(True)
-        form.addRow(note)
-        return box
 
-    def _build_fixed_group(self) -> QtWidgets.QWidget:
-        """A read-only summary of everything pinned to the simulator defaults."""
-        box, form = self._group("Fixed by the simulation", expanded=False)
+        self.stop_at_target = QtWidgets.QCheckBox("stop at target distance")
+        self.stop_at_target.setChecked(True)
+        self.stop_at_target.setToolTip(
+            "Integration ends when the tip crosses the target distance.\n"
+            "Unticked, the target is still drawn but the arrow flies on."
+        )
+        form.addRow(self.stop_at_target)
 
-        fixed = QtWidgets.QWidget()
-        fixed_form = QtWidgets.QFormLayout(fixed)
-        fixed_form.setContentsMargins(0, 0, 0, 0)
-        fixed_form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)
-        for name, value in FIXED_SUMMARY:
-            row = QtWidgets.QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            value_label = dim_label(QtWidgets.QLabel(value))
-            row.addWidget(value_label)
-            fixed_form.addRow(name, row)
-        form.addRow(fixed)
-
-        note = dim_label(QtWidgets.QLabel(
-            "These come from arrow_shot_simulator.example().\n"
-            "Edit arrow_viewer.py to change them."
-        ))
-        note.setWordWrap(True)
-        form.addRow(note)
+        self.checkpoint_edit = QtWidgets.QLineEdit(DEFAULT_CHECKPOINTS)
+        self.checkpoint_edit.setToolTip(
+            "Comma separated distances [m] drawn as dotted verticals."
+        )
+        form.addRow("checkpoints [m]", self.checkpoint_edit)
         return box
 
     def _build_playback_group(self) -> QtWidgets.QWidget:
@@ -1593,9 +1412,17 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
             spin = self._spin(form, fld)
             if fld.name == "speed_mult":
                 spin.setSuffix(" x")
+        return box
+
+    def _build_advanced_group(self) -> QtWidgets.QWidget:
+        # Collapsed by default: this is the "extra" set of parameters, hidden
+        # behind the dropdown until it is actually needed.
+        box, form = self._group("Advanced  -  arrow, feathers, air, integrator",
+                                expanded=False)
+        for fld in ADVANCED_FIELDS:
+            self._spin(form, fld)
         note = dim_label(QtWidgets.QLabel(
-            "Playback speed is view-only and does not affect the solve. The "
-            "launch is only ~22 ms of simulated time, so 1.0x would flash past it."
+            "A smaller max solver step is more accurate but takes longer to run."
         ))
         note.setWordWrap(True)
         form.addRow(note)
@@ -1756,67 +1583,99 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
     def _value(self, name: str) -> float:
         return float(self._widgets[name].value())
 
+    def _sync_velocity_inputs(self) -> None:
+        """Grey out whichever velocity entries the current mode does not use."""
+        by_angles = self.velocity_mode.currentIndex() == 0
+        for name, active in (
+            ("speed", by_angles),
+            ("elev", by_angles),
+            ("yaw", by_angles),
+            ("vx", not by_angles),
+            ("vy", not by_angles),
+            ("vz", not by_angles),
+            # The shaft attitude is only editable when it is not slaved to
+            # the velocity direction.
+            ("shaft_elev", not self.follow_direction.isChecked()),
+            ("shaft_yaw", not self.follow_direction.isChecked()),
+        ):
+            self._widgets[name].setEnabled(active)
+
+        if self.follow_direction.isChecked():
+            elev, yaw = angles_from_vector(self._initial_velocity())
+            self._widgets["shaft_elev"].setValue(elev)
+            self._widgets["shaft_yaw"].setValue(yaw)
+
+    def _initial_velocity(self) -> np.ndarray:
+        if self.velocity_mode.currentIndex() == 0:
+            speed = self._value("speed")
+            direction = direction_from_angles(
+                self._value("elev"), self._value("yaw")
+            )
+            return speed * direction
+        return np.array(
+            [self._value("vx"), self._value("vy"), self._value("vz")]
+        )
+
+    def _initial_direction(self) -> np.ndarray:
+        if self.follow_direction.isChecked():
+            velocity = self._initial_velocity()
+            return velocity / np.linalg.norm(velocity)
+        return direction_from_angles(
+            self._value("shaft_elev"), self._value("shaft_yaw")
+        )
+
     def _make_target(self) -> Target:
         return Target(
-            distance_m=FIXED_TARGET_DISTANCE_M,
-            height_m=FIXED_TARGET_HEIGHT_M,
-            z_m=FIXED_TARGET_Z_M,
-            radius_m=FIXED_TARGET_RADIUS_M,
+            distance_m=self._value("target_distance"),
+            height_m=self._value("target_height"),
+            z_m=self._value("target_z"),
+            radius_m=self._value("target_radius"),
         )
+
+    def _make_checkpoints(self) -> tuple[Optional[list], list]:
+        """Parse the checkpoint field into distances and names."""
+        text = self.checkpoint_edit.text().strip()
+        if not text:
+            return None, []
+
+        values: list[float] = []
+        names: list[str] = []
+        for chunk in text.replace(";", ",").split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                value = float(chunk)
+            except ValueError:
+                self.set_status(
+                    f"Ignoring unreadable checkpoint entry {chunk!r}.", error=True
+                )
+                continue
+            values.append(value)
+            names.append(f"{value:g} m")
+
+        if not values:
+            return None, []
+        return values, names
 
     def _make_arrow(self) -> Arrow:
-        """Build the arrow: length and spine from the panel, rest fixed.
-
-        The point sits at the tip (``point_x_m == length_m`` in the
-        simulator's example), so it is expressed as a fraction of the length
-        here -- otherwise changing the arrow length would leave the point
-        floating short of the tip or, worse, past the end of the shaft.
-        """
-        length_m = self._value("arrow_length")
         return Arrow(
-            length_m=length_m,
-            shaft_outer_d_m=FIXED_SHAFT_OD_M,
-            shaft_inner_d_m=FIXED_SHAFT_ID_M,
-            total_mass_kg=FIXED_TOTAL_MASS_KG,
-            point_mass_kg=FIXED_POINT_MASS_KG,
-            point_x_m=FIXED_POINT_X_FRACTION * length_m,
+            length_m=self._value("length"),
+            shaft_outer_d_m=self._value("shaft_od"),
+            shaft_inner_d_m=self._value("shaft_id"),
+            total_mass_kg=self._value("mass"),
+            point_mass_kg=self._value("point_mass"),
+            point_x_m=self._value("point_x"),
             spine=self._value("spine"),
             feathers=Feather(
-                x_start_m=FIXED_FEATHER_X0_M,
-                x_end_m=FIXED_FEATHER_X1_M,
-                height_m=FIXED_FEATHER_HEIGHT_M,
-                area_each_m2=FIXED_FEATHER_AREA_M2,
-                count=FIXED_FEATHER_COUNT,
-                cant_deg=FIXED_FEATHER_CANT_DEG,
-                mass_kg=FIXED_FEATHER_MASS_KG,
+                x_start_m=self._value("feather_x0"),
+                x_end_m=self._value("feather_x1"),
+                height_m=self._value("feather_h"),
+                area_each_m2=self._value("feather_area"),
+                count=int(round(self._value("feather_count"))),
+                cant_deg=self._value("feather_cant"),
+                mass_kg=self._value("feather_mass"),
             ),
-        )
-
-    def _make_bow(self):
-        """Build the bow: the ten editable fields, everything else fixed.
-
-        The bow *class* is fixed rather than editable because it is not a
-        numeric parameter -- it selects the draw-force curve exponent, so
-        changing it would silently change the shape of the force-draw curve
-        rather than any single value on the panel.
-        """
-        bow_class = Longbow if BOW_CLASS == "longbow" else Recurve
-        return bow_class(
-            length_m=FIXED_BOW_LENGTH_M,
-            draw_strength_kgf=self._value("draw_strength"),
-            draw_length_m=self._value("draw_length"),
-            brace_height_m=FIXED_BRACE_HEIGHT_M,
-            arrow_side_offset_m=self._value("arrow_side_offset"),
-            nock_height_offset_m=self._value("nock_height_offset"),
-            bow_cant_deg=self._value("bow_cant"),
-            release_bow_azimuth_deg=self._value("bow_azimuth"),
-            release_lateral_displacement_m=self._value(
-                "release_lateral_displacement"
-            ),
-            release_lateral_velocity_m_s=self._value("release_lateral_velocity"),
-            release_string_roll_deg=self._value("release_string_roll"),
-            arrow_rest_longitudinal_offset_m=self._value("rest_longitudinal_offset"),
-            feather_clocking_deg=FIXED_FEATHER_CLOCKING_DEG,
         )
 
     # Running a shot
@@ -1828,34 +1687,68 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
 
         try:
             arrow = self._make_arrow()
-            bow = self._make_bow()
         except ValueError as exc:
-            # Arrow and Bow both validate their own geometry and budgets.
+            # Arrow validates its own geometry and mass budget.
             self.set_status(f"Cannot start: {exc}", error=True)
             return
 
-        checkpoints = list(DEFAULT_CHECKPOINTS)
+        velocity = self._initial_velocity()
+        if np.linalg.norm(velocity) < 1e-9:
+            self.set_status("Cannot start: the initial velocity is zero.", error=True)
+            return
+
+        direction = self._initial_direction()
+        if np.linalg.norm(direction) < 1e-9:
+            self.set_status(
+                "Cannot start: the shaft direction is zero.", error=True
+            )
+            return
+
+        checkpoints, checkpoint_names = self._make_checkpoints()
         self.target = self._make_target()
 
+        kwargs = dict(
+            arrow=arrow,
+            atmosphere=Atmosphere(
+                pressure_pa=self._value("pressure"),
+                temperature_k=self._value("temperature"),
+            ),
+            initial_position_m=[
+                self._value("x0"),
+                self._value("y0"),
+                self._value("z0"),
+            ],
+            initial_velocity_world_m_s=velocity,
+            initial_direction=direction,
+            initial_roll_deg=self._value("roll"),
+            initial_angular_velocity_body_rad_s=[
+                self._value("omega_pitch"),
+                self._value("omega_yaw"),
+                self._value("spin"),
+            ],
+            wind_world_m_s=[
+                self._value("wind_x"),
+                self._value("wind_y"),
+                self._value("wind_z"),
+            ],
+            target=self.target if self.stop_at_target.isChecked() else None,
+            checkpoints=checkpoints,
+            checkpoint_names=checkpoint_names or None,
+            ground_y_m=self._value("ground_y"),
+            t_end=self._value("t_end"),
+            dt=self._value("dt"),
+        )
+
         self._arrow = arrow
-        self._bow = bow
         self._checkpoints = checkpoints
 
         self._set_busy(True)
-        self.set_status("Integrating launch and flight ... this takes ~20 s.")
+        self.set_status("Integrating flight ...")
         self.readout.setText("")
         self._clear_views()
 
         self._thread = QtCore.QThread(self)
-        self._worker = SimulationWorker(
-            arrow,
-            bow,
-            target=self.target,
-            checkpoints=checkpoints,
-            checkpoint_names=[checkpoint_name(d) for d in checkpoints],
-            checkpoint_radius_m=FIXED_TARGET_RADIUS_M,
-            target_radius_m=FIXED_TARGET_RADIUS_M,
-        )
+        self._worker = SimulationWorker(kwargs)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.finished.connect(self._on_finished)
@@ -1867,43 +1760,33 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
         self._thread.finished.connect(self._on_thread_stopped)
         self._thread.start()
 
-    @QtCore.pyqtSlot(object, object)
-    def _on_finished(self, result, sim) -> None:
-        self._sim = sim
+    @QtCore.pyqtSlot(object)
+    def _on_finished(self, result) -> None:
         self._build_trajectory(result)
         self._set_busy(False)
 
-        launch, flight = result.launch, result.flight
         summary = [
-            f"launch {launch.left_bow_time_s * 1e3:.1f} ms",
-            f"exit {np.linalg.norm(launch.initial_velocity_world_m_s):.1f} m/s",
+            f"finished at t = {result.time_s:.3f} s",
+            f"end reason: {result.reason}",
         ]
-        # A bow contact means the shaft touched the riser during the stroke;
-        # the impulse is the thing that actually cost the arrow energy, so it
-        # is worth reporting even when the contact was brief.
-        if launch.bow_hit:
-            summary.append(
-                f"bow contact {launch.contact_impulse_Ns * 1e3:.2f} mNs"
-            )
-        summary.append(f"flight {flight.time_s:.3f} s ({flight.reason})")
-
-        if flight.target_error_m is not None:
+        if result.target_error_m is not None:
             summary.append(
                 "target error = "
                 + np.array2string(
-                    np.round(flight.target_error_m, 4), precision=3, separator=", "
+                    np.round(result.target_error_m, 4), precision=3, separator=", "
                 )
                 + " m"
             )
-            summary.append("HIT" if flight.target_hit else "MISS")
+            summary.append("HIT" if result.target_hit else "MISS")
         elif self.target is not None:
             # The flight ended on the ground before the target distance, so
             # the integrator never evaluated a target error.  Report how far
             # short the arrow landed instead.
-            if self.trajectory is not None:
-                short_by = self.target.distance_m - float(self.trajectory.tip[-1][0])
-                if short_by > 0:
-                    summary.append(f"landed {short_by:.2f} m short of the target")
+            short_by = self.target.distance_m - float(
+                self.trajectory.tip[-1][0]
+            ) if self.trajectory is not None else float("nan")
+            if short_by > 0:
+                summary.append(f"landed {short_by:.2f} m short of the target")
         self.set_status("   |   ".join(summary))
         self.restart_button.setEnabled(True)
 
@@ -1922,12 +1805,10 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
     def _build_trajectory(self, result) -> None:
         """Turn a finished solve into displayable frames for both views."""
         try:
-            self.trajectory = Trajectory.from_shot(
-                self._arrow, self._sim, result
-            )
+            self.trajectory = Trajectory.from_result(self._arrow, result)
         except Exception as exc:  # noqa: BLE001 - reported in the status bar
             self.trajectory = None
-            self.set_status(f"Could not prepare the shot: {exc}", error=True)
+            self.set_status(f"Could not prepare the flight: {exc}", error=True)
             return
 
         checkpoints = self._checkpoints
@@ -1935,7 +1816,7 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
             view.set_trajectory(self.trajectory)
             view.set_target(self.target)
             view.set_checkpoints(checkpoints)
-            view.set_reference(FIXED_GROUND_Y_M)
+            view.set_reference(self._value("ground_y"))
 
         self._fit_views()
 
@@ -2013,14 +1894,9 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
             tip = self.trajectory.tip[index]
             speed = float(self.trajectory.speed[index])
             t_now = float(self.trajectory.t[index])
-            # Name the phase, because the launch and the flight are different
-            # models being drawn by the same code.
-            phase = (
-                "launch" if index < self.trajectory.n_launch else "flight"
-            )
             self.time_label.setText(f"t = {t_now:.3f} s")
             self.readout.setText(
-                f"[{phase}]  x = {tip[0]:7.2f} m   y = {tip[1]:6.2f} m   "
+                f"x = {tip[0]:7.2f} m   y = {tip[1]:6.2f} m   "
                 f"z = {tip[2]:6.3f} m   |v| = {speed:6.2f} m/s"
             )
 
@@ -2130,10 +2006,14 @@ class ArrowViewerWindow(QtWidgets.QMainWindow):
     def _restore_defaults(self) -> None:
         for name, fld in ALL_FIELDS.items():
             self._widgets[name].setValue(fld.default)
+        self.checkpoint_edit.setText(DEFAULT_CHECKPOINTS)
+        self.velocity_mode.setCurrentIndex(0)
+        self.stop_at_target.setChecked(True)
         self.follow_check.setChecked(False)
         for section in self._group_boxes:
-            if section.title.startswith("Fixed"):
+            if section.title.startswith("Advanced"):
                 section.set_expanded(False)
+        self._sync_velocity_inputs()
         self.set_status("Defaults restored - press Start to run the example shot.")
 
     def _set_busy(self, busy: bool) -> None:
